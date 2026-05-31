@@ -1,6 +1,10 @@
-# stepwong
+# ZeppRunrunrun
 
 ZEPP Life API 刷微信支付宝步数
+
+## Update 
+- Gitaction/checkout from v4 to v5
+- Python setup action from v3 to v5
 
 ## ✨ 新功能
 
