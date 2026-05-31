@@ -2,10 +2,6 @@
 
 ZEPP Life API 刷微信支付宝步数
 
-## Update 
-- Gitaction/checkout from v4 to v5
-- Python setup action from v3 to v5
-
 ## ✨ 新功能
 
 ### Token 缓存机制（2026-01-14）
@@ -58,6 +54,10 @@ pip install -r requirements.txt
 - 🐛 修复登录 JSON 解析错误
 - 📝 添加详细错误日志
 - 🔒 支持 AES 加密存储
+
+### 2026-05-31
+- 🛠️ Gitaction/checkout from v4 to v5
+- 🛠️ Python setup action from v3 to v5
 
 ## ⚠️ 注意事项
 
