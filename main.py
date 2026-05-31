@@ -54,14 +54,25 @@ def get_int_value_default(_config: dict, _key, default):
 
 
 # 获取当前时间对应的最大和最小步数
-def get_min_max_by_time(hour=None, minute=None):
+# account_min_step 和 account_max_step 为账号特定配置，可选
+def get_min_max_by_time(hour=None, minute=None, account_min_step=None, account_max_step=None):
     if hour is None:
         hour = time_bj.hour
     if minute is None:
         minute = time_bj.minute
     time_rate = min((hour * 60 + minute) / (22 * 60), 1)
-    min_step = get_int_value_default(config, 'MIN_STEP', 18000)
-    max_step = get_int_value_default(config, 'MAX_STEP', 25000)
+    
+    # 使用账号特定配置或全局配置
+    if account_min_step is None:
+        min_step = get_int_value_default(config, 'MIN_STEP', 18000)
+    else:
+        min_step = account_min_step
+    
+    if account_max_step is None:
+        max_step = get_int_value_default(config, 'MAX_STEP', 25000)
+    else:
+        max_step = account_max_step
+    
     return int(time_rate * min_step), int(time_rate * max_step)
 
 
@@ -453,11 +464,19 @@ def push_to_push_plus(exec_results, summary):
         push_plus(f"{format_now()} 刷步数通知", html)
 
 
-def run_single_account(total, idx, user_mi, passwd_mi):
+def run_single_account(total, idx, user_mi, passwd_mi, account_min_step=None, account_max_step=None):
     idx_info = ""
     if idx is not None:
         idx_info = f"[{idx + 1}/{total}]"
     log_str = f"[{format_now()}]\n{idx_info}账号：{desensitize_user_name(user_mi)}"
+    
+    # 根据账号配置获取时间动态步数范围
+    if account_min_step is not None and account_max_step is not None:
+        log_str += f" (账号特定步数范围: {account_min_step}-{account_max_step})\n"
+        min_step, max_step = get_min_max_by_time(account_min_step=account_min_step, account_max_step=account_max_step)
+    else:
+        min_step, max_step = get_min_max_by_time()
+    
     try:
         runner = MiMotionRunner(user_mi, passwd_mi)
         exec_msg, success = runner.login_and_post_step(min_step, max_step)
@@ -522,43 +541,118 @@ def persist_user_tokens():
 
 
 def execute():
-    user_list = users.split('#')
-    passwd_list = passwords.split('#')
     exec_results = []
+    
     try:
-        if len(user_list) == len(passwd_list):
-            idx, total = 0, len(user_list)
+        # 使用 AccountGroup 配置格式
+        if 'AccountGroup' in config:
+            account_group = config['AccountGroup']
+            total = len(account_group)
+            idx = 0
+            
             if use_concurrent:
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     exec_results = executor.map(lambda x: run_single_account(total, x[0], *x[1]),
-                                                enumerate(zip(user_list, passwd_list)))
+                                                enumerate([(acc[0], acc[1], acc[2][0], acc[2][1]) 
+                                                          for acc in account_group]))
             else:
-                for user_mi, passwd_mi in zip(user_list, passwd_list):
-                    exec_results.append(run_single_account(total, idx, user_mi, passwd_mi))
+                for acc in account_group:
+                    user_mi = acc[0]
+                    passwd_mi = acc[1]
+                    step_config = acc[2]
+                    
+                    # 解析步数配置
+                    account_min_step = None
+                    account_max_step = None
+                    if step_config is not None:
+                        if isinstance(step_config, list) and len(step_config) == 2:
+                            account_min_step = step_config[0]
+                            account_max_step = step_config[1]
+                        else:
+                            # 固定值，作为最大步数，最小步数设为该值的80%
+                            account_min_step = int(step_config * 0.8)
+                            account_max_step = step_config
+                    
+                    exec_results.append(run_single_account(total, idx, user_mi, passwd_mi, 
+                                                           account_min_step, account_max_step))
                     idx += 1
                     if idx < total:
-                        # 每个账号之间间隔一定时间请求一次，避免接口请求过于频繁导致异常
                         time.sleep(sleep_seconds)
-
-            success_count = 0
-            push_results = []
-            for result in exec_results:
-                push_results.append(result)
-                if result['success'] is True:
-                    success_count += 1
-            summary = f"\n执行账号总数{total}，成功：{success_count}，失败：{total - success_count}"
-            print(summary)
-            
-            # 保存 token 缓存
-            if encrypt_support:
-                persist_user_tokens()
-            
-            # 成功后不再推送，异常的时候再推送
-            # push_to_push_plus(push_results, summary)
+        
+                success_count = 0
+                push_results = []
+                for result in exec_results:
+                    push_results.append(result)
+                    if result['success'] is True:
+                        success_count += 1
+                summary = f"\n执行账号总数{total}，成功：{success_count}，失败：{total - success_count}"
+                print(summary)
+                
+                # 保存 token 缓存
+                if encrypt_support:
+                    persist_user_tokens()
+                
+                # 成功后不再推送，异常的时候再推送
+                # push_to_push_plus(push_results, summary)
         else:
-            print(f"账号数长度[{len(user_list)}]和密码数长度[{len(passwd_list)}]不匹配，跳过执行")
-            exit(1)
+            # 兼容原有的 USER/PWD/STEPS 配置格式
+            user_list = users.split('#')
+            passwd_list = passwords.split('#')
+            
+            steps_list = []
+            steps_config = config.get('STEPS')
+            if steps_config is not None and steps_config != '':
+                steps_parts = steps_config.split('#')
+                for step_range in steps_parts:
+                    if '-' in step_range:
+                        try:
+                            min_s, max_s = step_range.split('-')
+                            steps_list.append((int(min_s), int(max_s)))
+                        except:
+                            steps_list.append(None)
+                    else:
+                        steps_list.append(None)
+            
+            if len(user_list) == len(passwd_list):
+                idx, total = 0, len(user_list)
+                if use_concurrent:
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        exec_results = executor.map(lambda x: run_single_account(total, x[0], *x[1]),
+                                                    enumerate(zip(user_list, passwd_list)))
+                else:
+                    for user_mi, passwd_mi in zip(user_list, passwd_list):
+                        account_min_step = None
+                        account_max_step = None
+                        if idx < len(steps_list) and steps_list[idx] is not None:
+                            account_min_step, account_max_step = steps_list[idx]
+                        
+                        exec_results.append(run_single_account(total, idx, user_mi, passwd_mi, 
+                                                               account_min_step, account_max_step))
+                        idx += 1
+                        if idx < total:
+                            time.sleep(sleep_seconds)
+
+                success_count = 0
+                push_results = []
+                for result in exec_results:
+                    push_results.append(result)
+                    if result['success'] is True:
+                        success_count += 1
+                summary = f"\n执行账号总数{total}，成功：{success_count}，失败：{total - success_count}"
+                print(summary)
+                
+                # 保存 token 缓存
+                if encrypt_support:
+                    persist_user_tokens()
+                
+                # 成功后不再推送，异常的时候再推送
+                # push_to_push_plus(push_results, summary)
+            else:
+                print(f"账号数长度[{len(user_list)}]和密码数长度[{len(passwd_list)}]不匹配，跳过执行")
+                exit(1)
+
     except:
         push_to_push_plus("stepwong", "步数刷新失败！")
         print(f"执行异常:{traceback.format_exc()}")
@@ -619,9 +713,12 @@ if __name__ == "__main__":
         sleep_seconds = float(sleep_seconds)
         users = config.get('USER')
         passwords = config.get('PWD')
-        if users is None or passwords is None:
+        
+        # 检查配置：支持 AccountGroup 或 USER/PWD 两种方式
+        if 'AccountGroup' not in config and (users is None or passwords is None):
             print("未正确配置账号密码，无法执行")
             exit(1)
+        
         min_step, max_step = get_min_max_by_time()
         use_concurrent = config.get('USE_CONCURRENT')
         if use_concurrent is not None and use_concurrent == 'True':
