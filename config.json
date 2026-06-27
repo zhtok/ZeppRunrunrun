@@ -1,0 +1,11 @@
+{
+  "USER": "账号(手机号或邮箱)",
+  "PWD": "密码",
+  "MIN_STEP": 最小步数(填数字即可),
+  "MAX_STEP": 最大步数(填数字即可，最好别超过5万步),
+  "SLEEP_GAP": 5
+  "AES_KEY":"(可留空)"
+  "RUN_START_TIME": "07:00",
+  "RUN_END_TIME": "22:30",
+  "RUN_INTERVAL": 3
+}
