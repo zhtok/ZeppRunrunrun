@@ -16,7 +16,7 @@ Write-Host "Task Scheduler Import Tool" -ForegroundColor Cyan
 Write-Host "================================================" -ForegroundColor Cyan
 Write-Host ""
 
-Write-Host "[1/4] Checking script path" -ForegroundColor Green
+Write-Host "[1/5] Checking script path" -ForegroundColor Green
 Write-Host "  Current dir: $scriptDir" -ForegroundColor White
 
 $runBatPath = Join-Path $targetDir "run.bat"
@@ -28,7 +28,39 @@ if (-not (Test-Path $runBatPath)) {
 Write-Host "  [OK] run.bat found" -ForegroundColor Green
 
 Write-Host ""
-Write-Host "[2/4] Set start time" -ForegroundColor Green
+Write-Host "[2/5] Run mode" -ForegroundColor Green
+
+$defaultMode = "interactive"
+if (Test-Path $configFile) {
+    try {
+        $config = Get-Content $configFile -Raw | ConvertFrom-Json
+        if ($config.RUN_MODE) { $defaultMode = $config.RUN_MODE }
+    } catch {}
+}
+
+Write-Host "  Choose run mode:" -ForegroundColor White
+Write-Host "    1. Interactive mode (only runs when you are logged in)" -ForegroundColor Gray
+Write-Host "    2. Server mode (runs whether you are logged in or not)" -ForegroundColor Gray
+Write-Host ""
+Write-Host "  Tip: Use server mode on a server/remote machine" -ForegroundColor DarkGray
+$modeInput = Read-Host "  Enter 1 or 2 (default: 1)"
+
+if ([string]::IsNullOrWhiteSpace($modeInput)) {
+    $modeInput = "1"
+}
+
+$useServerMode = ($modeInput -eq "2")
+
+if ($useServerMode) {
+    Write-Host "  [OK] Mode: Server" -ForegroundColor Yellow
+    $password = Read-Host "  Enter password for $env:USERDOMAIN\$env:USERNAME" -AsSecureString
+    $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($password))
+} else {
+    Write-Host "  [OK] Mode: Interactive" -ForegroundColor Yellow
+}
+
+Write-Host ""
+Write-Host "[3/5] Set start time" -ForegroundColor Green
 
 $defaultStart = "07:00"
 $defaultEnd = "22:30"
@@ -62,7 +94,7 @@ try {
 Write-Host "  [OK] Start: $($startTime.ToString('HH:mm'))" -ForegroundColor Yellow
 
 Write-Host ""
-Write-Host "[3/4] Set end time and interval" -ForegroundColor Green
+Write-Host "[4/5] Set end time and interval" -ForegroundColor Green
 Write-Host "  Format: HH:mm (e.g. 22:30)" -ForegroundColor Gray
 Write-Host "  Or set RUN_END_TIME in config.json" -ForegroundColor DarkGray
 $endInput = Read-Host "  Enter end time (default $defaultEnd)"
@@ -102,7 +134,7 @@ try {
 Write-Host "  [OK] Interval: every $intervalHours hours" -ForegroundColor Yellow
 
 Write-Host ""
-Write-Host "[4/4] Generate schedule" -ForegroundColor Green
+Write-Host "[5/5] Generate schedule" -ForegroundColor Green
 
 $times = @()
 $currentTime = $startTime
@@ -146,20 +178,27 @@ foreach ($t in $times) {
 "@
 }
 
+if ($useServerMode) {
+    $logonType = "Password"
+} else {
+    $logonType = "InteractiveToken"
+}
+
 $taskXml += @"
   </Triggers>
   <Principals>
     <Principal id="Author">
-      <LogonType>S4U</LogonType>
+      <UserId>$env:USERDOMAIN\$env:USERNAME</UserId>
+      <LogonType>$logonType</LogonType>
       <RunLevel>LeastPrivilege</RunLevel>
     </Principal>
   </Principals>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>true</StopIfGoingOnBatteries>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>false</StartWhenAvailable>
+    <StartWhenAvailable>true</StartWhenAvailable>
     <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
     <IdleSettings>
       <StopOnIdleEnd>true</StopOnIdleEnd>
@@ -184,7 +223,13 @@ $utf16 = New-Object System.Text.UnicodeEncoding $false, $true
 [System.IO.File]::WriteAllText($tempXmlFile, $taskXml, $utf16)
 
 Write-Host "  Creating task..." -ForegroundColor White
-schtasks /create /tn "$taskName" /xml "$tempXmlFile" /f
+
+if ($useServerMode) {
+    schtasks /create /tn "$taskName" /xml "$tempXmlFile" /ru "$env:USERDOMAIN\$env:USERNAME" /rp $plainPassword /f
+    $plainPassword = $null
+} else {
+    schtasks /create /tn "$taskName" /xml "$tempXmlFile" /f
+}
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "  [OK] Task created" -ForegroundColor Green
@@ -202,6 +247,11 @@ Write-Host "Done!" -ForegroundColor Green
 Write-Host "================================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Task: $taskName" -ForegroundColor White
+if ($useServerMode) {
+    Write-Host "Mode: Server (runs whether logged on or not)" -ForegroundColor Yellow
+} else {
+    Write-Host "Mode: Interactive (runs only when logged on)" -ForegroundColor Yellow
+}
 Write-Host "Times: $($times -join ', ')" -ForegroundColor Yellow
 Write-Host "Script: $runBatPath" -ForegroundColor White
 Write-Host ""
