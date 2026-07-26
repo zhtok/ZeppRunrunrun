@@ -213,6 +213,19 @@ class MiMotionRunner:
         except Exception:
             pass
 
+    # 检查 token 是否过期（1天有效期）
+    def is_token_expired(self, user_token_info):
+        login_time_str = user_token_info.get("login_time")
+        if login_time_str is None:
+            return True
+        try:
+            login_time = int(login_time_str) / 1000
+            current_time = get_beijing_time().timestamp()
+            # token 有效期设为 1 天（86400秒）
+            return (current_time - login_time) > 86400
+        except:
+            return True
+
     # 登录
     def login(self):
         # 尝试从缓存中获取 token
@@ -226,8 +239,10 @@ class MiMotionRunner:
                 self.device_id = str(uuid.uuid4())
                 user_token_info["device_id"] = self.device_id
             
-            # 尝试使用缓存的 login_token
-            if login_token is not None and self.userid is not None:
+            # 检查 token 是否过期
+            if self.is_token_expired(user_token_info):
+                self.log_str += "缓存的 login_token 已过期，重新登录\n"
+            elif login_token is not None and self.userid is not None:
                 self.log_str += "使用缓存的 login_token\n"
                 return login_token, self.userid
             else:
@@ -407,6 +422,8 @@ class MiMotionRunner:
         t = get_time()
 
         app_token = self.get_app_token(login_token)
+        if app_token is None:
+            return "获取 app_token 失败，可能是 login_token 已过期", False
 
         today = time.strftime("%F")
 
@@ -425,9 +442,22 @@ class MiMotionRunner:
 
         data = f'userid={userid}&last_sync_data_time=1597306380&device_type=0&last_deviceid=DA932FFFFE8816E7&data_json={data_json}'
 
-        response = requests.post(url, data=data, headers=head, timeout=15).json()
-        # print(response)
-        return f"修改步数（{step}）[" + response['message'] + "]", True
+        try:
+            response = requests.post(url, data=data, headers=head, timeout=15).json()
+            
+            code = response.get('code', -1)
+            message = response.get('message', '未知')
+            
+            # Zepp 接口返回 message 为 success 即表示成功
+            if 'success' in str(message).lower() or str(message) == '成功':
+                self.log_str += f"步数提交成功：{message}\n"
+                return f"修改步数（{step}）[{message}]", True
+            else:
+                self.log_str += f"步数提交失败，错误码：{code}，信息：{message}\n"
+                return f"修改步数（{step}）失败[{message}]", False
+        except Exception as e:
+            self.log_str += f"步数提交异常：{str(e)}\n"
+            return f"修改步数（{step}）异常", False
 
 
 # 启动主函数
@@ -496,7 +526,11 @@ def prepare_user_tokens() -> dict:
         return json.loads(decrypted_data.decode('utf-8', errors='strict'))
     except Exception as e:
         print(f"加载 token 缓存失败: {e}")
-        print("密钥不正确或者加密内容损坏，放弃 token 缓存")
+        print("密钥不正确或者加密内容损坏，删除旧缓存并重新生成")
+        try:
+            os.remove(data_path)
+        except:
+            pass
         return dict()
 
 
